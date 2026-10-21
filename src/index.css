@@ -1,0 +1,29 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+body { @apply bg-bg text-slate-200 font-sans; }
+.card { @apply bg-bg-card border border-bg-line rounded-2xl; }
+.input { @apply w-full bg-[#141d31] border border-bg-line rounded-xl px-3 py-2 text-sm outline-none focus:border-brand-light; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-50; }
+.btn-primary { @apply btn bg-brand hover:bg-brand-light text-white; }
+.btn-ghost { @apply btn border border-bg-line hover:bg-white/5; }
+.badge { @apply inline-block rounded-full px-2 py-0.5 text-xs font-semibold; }
+.skeleton { @apply animate-pulse bg-white/10 rounded-lg; }
+.spin { @apply animate-spin; }
+
+@media print {
+  aside, header, nav, footer, .no-print { display: none !important; }
+  body { background: #fff !important; color: #000 !important; }
+  .card { background: #fff !important; border-color: #ccc !important; color: #000 !important; break-inside: avoid; }
+  .text-slate-400, .text-slate-500 { color: #444 !important; }
+  main { padding: 0 !important; }
+}
+
+/* สำเนาใบแจ้งหนี้ขนาดจริง (อยู่นอกจอ ใช้พิมพ์/สร้าง PDF) */
+.print-area { position: fixed; left: -10000px; top: 0; }
+@media print {
+  body.printing-invoice #root { display: none !important; }
+  body.printing-invoice .print-area { position: static !important; }
+  @page { size: A4; margin: 0; }
+  main { padding: 10mm !important; }
+}
