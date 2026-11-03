@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, Trash2, Pencil, Printer, Cloud, ArrowLeft, Save, ExternalLink, Download, RefreshCw, FileText, Bookmark, Receipt, Upload, Loader2, Eye } from 'lucide-react'
+import { Plus, Trash2, Pencil, Printer, Cloud, ArrowLeft, Save, ExternalLink, Download, RefreshCw, FileText, Bookmark, Receipt, Upload, Loader2, Eye, Send } from 'lucide-react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/auth.jsx'
 import { useCustomer } from '../lib/customer.jsx'
+import { useRealtime } from '../lib/realtime'
 import { useShop } from '../lib/shop.jsx'
 import { usePerm } from '../lib/usePerm'
 import { useDataUrl } from '../lib/useDataUrl'
@@ -84,13 +85,13 @@ function Editor({ invoice, onClose, onSaved }) {
     const last = data?.[0]?.invoice_no ? parseInt(data[0].invoice_no.slice(prefix.length), 10) : 0
     return prefix + String((last || 0) + 1).padStart(3, '0')
   }
-  async function persist() {
+  async function persist(statusOverride) {
     if (!f.customer_id) throw new Error('เลือกลูกค้า')
     if (!f.items.length) throw new Error('ยังไม่มีรายการในบิล')
     const payload = {
       customer_id: f.customer_id, issue_date: f.issue_date, due_date: f.due_date || null, period_from: f.period_from || null, period_to: f.period_to || null,
       items: f.items, discount: Number(f.discount) || 0, vat_rate: Number(f.vat_rate) || 0, wht_rate: Number(f.wht_rate) || 0,
-      subtotal: t.subtotal, vat: t.vat, total: t.total, wht: t.wht, net_total: t.net, note: f.note || null, status: f.status
+      subtotal: t.subtotal, vat: t.vat, total: t.total, wht: t.wht, net_total: t.net, note: f.note || null, status: statusOverride || f.status
     }
     if (f.id) {
       const { error } = await supabase.from('invoices').update(payload).eq('id', f.id)
@@ -103,7 +104,11 @@ function Editor({ invoice, onClose, onSaved }) {
     setF(x => ({ ...x, id: data.id, invoice_no: data.invoice_no }))
     return data
   }
-  async function save() { const { error } = await run(persist, 'บันทึกใบแจ้งหนี้แล้ว'); if (!error) onSaved() }
+  async function save() { const { error } = await run(() => persist(), 'บันทึกใบแจ้งหนี้แล้ว'); if (!error) onSaved() }
+  async function sendToCustomer() {
+    const { error } = await run(() => persist('sent'), 'บันทึกและส่งให้ลูกค้าแล้ว — ลูกค้าเห็นบิลและอัปโหลดสลิปได้')
+    if (!error) { setF(x => ({ ...x, status: 'sent' })); onSaved() }
+  }
   const cap = () => document.getElementById('invoice-capture')
   async function download() { await run(async () => { const row = await persist(); (await makePdf(cap())).save(`${row.invoice_no}.pdf`) }); onSaved() }
   async function toDrive() {
@@ -125,7 +130,8 @@ function Editor({ invoice, onClose, onSaved }) {
       <div className="card p-3 flex flex-wrap items-center gap-2">
         <button className="btn-ghost" onClick={onClose}><ArrowLeft size={16} /> กลับ</button>
         <h2 className="font-bold mr-auto">{f.id ? `ใบแจ้งหนี้ ${f.invoice_no}` : 'สร้างใบแจ้งหนี้ใหม่'}</h2>
-        <button className="btn-primary" onClick={save}><Save size={16} /> บันทึก</button>
+        <button className="btn-ghost" onClick={save}><Save size={16} /> บันทึกร่าง</button>
+        {f.status === 'draft' && <button className="btn-primary" onClick={sendToCustomer}><Send size={16} /> บันทึกและส่งให้ลูกค้า</button>}
         <button className="btn-ghost" onClick={printDoc}><Printer size={16} /> พิมพ์ A4</button>
         <button className="btn-ghost" onClick={download}><Download size={16} /> PDF</button>
         <button className="btn-ghost" onClick={toDrive}><Cloud size={16} /> บันทึกขึ้น Drive</button>
@@ -233,9 +239,9 @@ function SlipButton({ invoice, onDone }) {
     setBusy(true)
     try {
       const url = await uploadImage(file, 'slips')
-      const { error } = await supabase.rpc('submit_slip', { p_invoice: invoice.id, p_slip: url })
+      const { data, error } = await supabase.rpc('submit_slip', { p_invoice: invoice.id, p_slip: url })
       if (error) throw error
-      await ok('ส่งสลิปแล้ว ออกใบเสร็จเรียบร้อย'); onDone()
+      await ok('ส่งสลิปแล้ว ออกใบเสร็จเรียบร้อย'); onDone(data)
     } catch (err) { fail('อัปโหลดสลิปไม่สำเร็จ', err.message) }
     setBusy(false)
   }
@@ -264,6 +270,15 @@ export default function Billing() {
     setRows(data || []); setLoading(false)
   }, [cid])
   useEffect(() => { load() }, [load])
+  useRealtime(['invoices'], load)
+
+  async function markSent(r) {
+    await run(async () => {
+      const { error } = await supabase.from('invoices').update({ status: 'sent' }).eq('id', r.id)
+      if (error) throw new Error(error.message)
+    }, 'ส่งให้ลูกค้าแล้ว — ลูกค้าเห็นบิลและอัปโหลดสลิปได้')
+    load()
+  }
 
   async function remove(r) {
     if (!(await confirm(`ลบใบแจ้งหนี้ ${r.invoice_no}?`, 'ไฟล์ใน Drive จะไม่ถูกลบ', 'ลบ'))) return
@@ -285,19 +300,21 @@ export default function Billing() {
             <th className="text-left p-3">เลขที่</th><th className="text-left p-3">ลูกค้า</th><th className="p-3">รอบบริการ</th><th className="p-3 text-right">ยอดชำระ</th><th className="p-3">สถานะ</th><th className="p-3 text-right">จัดการ</th></tr></thead>
           <tbody>
             {loading && Array.from({ length: 3 }).map((_, i) => <tr key={i}><td colSpan="6" className="p-3"><div className="skeleton h-9" /></td></tr>)}
-            {!loading && rows.length === 0 && <tr><td colSpan="6" className="p-10 text-center text-slate-500">ยังไม่มีใบแจ้งหนี้</td></tr>}
+            {!loading && rows.length === 0 && <tr><td colSpan="6" className="p-10 text-center text-slate-500">{canEdit ? 'ยังไม่มีใบแจ้งหนี้' : 'ยังไม่มีใบแจ้งหนี้ที่ส่งถึงคุณ — เมื่อผู้ให้บริการส่งบิลมา จะแสดงที่นี่ และอัปโหลดสลิปได้ทันที'}</td></tr>}
             {!loading && rows.map(r => (
               <tr key={r.id} className="border-b border-bg-line/60">
                 <td className="p-3 font-semibold whitespace-nowrap">{r.invoice_no}<div className="text-xs text-slate-400 font-normal">{thDate(r.issue_date)}{r.due_date && ` • ครบ ${thDate(r.due_date)}`}</div></td>
                 <td className="p-3">{r.customers?.name}</td>
                 <td className="p-3 text-center text-xs whitespace-nowrap">{r.period_from ? `${thDate(r.period_from)} - ${thDate(r.period_to)}` : '-'}</td>
                 <td className="p-3 text-right font-bold">{money(r.net_total || r.total)}{r.wht > 0 && <div className="text-[10px] text-slate-400 font-normal">หัก ณ ที่จ่ายแล้ว</div>}</td>
-                <td className="p-3 text-center"><span className={`badge ${STATUS[r.status][1]}`}>{STATUS[r.status][0]}</span>{r.receipt_no && <div className="text-[10px] text-slate-400 mt-1">{r.receipt_no}</div>}</td>
+                <td className="p-3 text-center"><span className={`badge ${STATUS[r.status][1]}`}>{STATUS[r.status][0]}</span>{r.receipt_no && <div className="text-[10px] text-slate-400 mt-1">{r.receipt_no}</div>}
+                  {canEdit && r.status === 'draft' && <div className="text-[10px] text-amber-300 mt-1">ลูกค้ายังไม่เห็น</div>}</td>
                 <td className="p-3"><div className="flex flex-wrap justify-end gap-1">
                   <button className="btn-ghost !py-1 px-2" title="ดูใบแจ้งหนี้" onClick={() => setDoc({ kind: 'invoice', inv: r })}><Eye size={15} /></button>
                   {r.receipt_no && <button className="btn-ghost !py-1 px-2 text-emerald-300" title="ใบเสร็จ" onClick={() => setDoc({ kind: 'receipt', inv: r })}><Receipt size={15} /></button>}
                   {r.slip_url && <a className="btn-ghost !py-1 px-2" href={r.slip_url} target="_blank" rel="noreferrer" title="ดูสลิป"><ExternalLink size={15} /></a>}
-                  {perm('bill.slip') && r.status === 'sent' && <SlipButton invoice={r} onDone={load} />}
+                  {perm('bill.slip') && r.status === 'sent' && <SlipButton invoice={r} onDone={(row) => { load(); if (row?.receipt_no) setDoc({ kind: 'receipt', inv: { ...r, ...row } }) }} />}
+                  {canEdit && r.status === 'draft' && <button className="btn-primary !py-1 px-2" title="ส่งให้ลูกค้า" onClick={() => markSent(r)}><Send size={15} /></button>}
                   {canEdit && <button className="btn-ghost !py-1 px-2" title="แก้ไข" onClick={() => setEditing(r)}><Pencil size={15} /></button>}
                   {perm('bill.delete') && <button className="btn-ghost !py-1 px-2 text-rose-400" onClick={() => remove(r)}><Trash2 size={15} /></button>}
                 </div></td>
